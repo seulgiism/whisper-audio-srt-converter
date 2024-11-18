@@ -5,6 +5,7 @@ import subprocess
 import re
 import time
 from groq import Groq
+from groq._base_client import APIStatusError
 
 # Directories configuration
 VIDEO_DIR = "./"
@@ -32,7 +33,7 @@ def convert_video_to_audio(video_file_path):
     base_name = os.path.splitext(os.path.basename(video_file_path))[0]
     audio_path = os.path.join(AUDIO_DIR, f"{base_name}.webm")
     ffmpeg_command = (
-        f"ffmpeg -i {shlex.quote(video_file_path)} -vn -ar 16000 -ac 1 -b:a 25k"
+        f"ffmpeg -i {shlex.quote(video_file_path)} -vn -ar 16000 -ac 1 -b:a 46k "
         f"{shlex.quote(audio_path)}"
     )
     print(f"Extracting audio: {video_file_path} -> {audio_path}")
@@ -40,13 +41,27 @@ def convert_video_to_audio(video_file_path):
     return audio_path
 
 
+def extract_retry_time(error_message):
+    """Extract retry time from rate limit error message."""
+    match = re.search(r"Please try again in (\d+h)?(\d+m)?(\d+\.\d+s)?", error_message)
+    if match:
+        hours = int(match.group(1)[:-1]) if match.group(1) else 0
+        minutes = int(match.group(2)[:-1]) if match.group(2) else 0
+        seconds = float(match.group(3)[:-1]) if match.group(3) else 0
+        return int(hours * 3600 + minutes * 60 + seconds)
+    return 60  # Default to 60 seconds if no time is found
+
+
 def transcribe_audio_with_groq(audio_path, json_output_path):
     """Send audio file to Groq API for transcription."""
     print(f"Transcribing {audio_path} -> {json_output_path}...")
     client = Groq()
-    with open(audio_path, "rb") as audio_file:
-        while True:
-            try:
+    retry_count = 0
+    max_retries = 5
+
+    while retry_count < max_retries:
+        try:
+            with open(audio_path, "rb") as audio_file:
                 transcription = client.audio.transcriptions.create(
                     file=(audio_path, audio_file.read()),
                     model="whisper-large-v3",
@@ -55,26 +70,23 @@ def transcribe_audio_with_groq(audio_path, json_output_path):
                 )
                 with open(json_output_path, "w", encoding="utf-8") as json_file:
                     json.dump(transcription.to_dict(), json_file, ensure_ascii=False, indent=4)
-                break  # Successful transcription
-            except Exception as e:
-                error_message = str(e)
-                print(f"Error: {error_message}")
-                
-                # Check if it's a rate limit error
-                if "rate limit reached" in error_message.lower():
-                    # Extract the "Please try again in X" time
-                    retry_match = re.search(r"Please try again in (\d+m\d+\.\d+s)", error_message)
-                    if retry_match:
-                        retry_time = retry_match.group(1)
-                        minutes, seconds = map(float, retry_time[:-1].split('m'))
-                        total_wait_time = int(minutes * 60 + seconds)
-                        print(f"Rate limit reached. Retrying in {total_wait_time} seconds...")
-                        time.sleep(total_wait_time)
-                    else:
-                        print("Rate limit reached but no retry time specified. Retrying in 60 seconds...")
-                        time.sleep(60)
-                else:
-                    raise e  # Re-raise other exceptions
+                return  # Exit the function if successful
+        except APIStatusError as e:
+            error_message = str(e)
+            print(f"Error: {error_message}")
+            if "rate limit reached" in error_message.lower():
+                retry_after = extract_retry_time(error_message)
+                print(f"Rate limit reached. Retrying in {retry_after} seconds...")
+                time.sleep(retry_after)
+            else:
+                retry_count += 1
+                wait_time = 60 * retry_count
+                print(f"Unexpected APIStatusError. Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+        except Exception as e:
+            print(f"Unhandled error: {e}. Skipping file.")
+            break
+    print(f"Failed to transcribe {audio_path} after {max_retries} retries.")
 
 
 def seconds_to_srt_timestamp(seconds):
@@ -134,10 +146,9 @@ def process_video_files():
 
     print("Processing complete.")
     # Cleanup remaining directories
-    if os.path.exists(AUDIO_DIR):
-        os.rmdir(AUDIO_DIR)
-    if os.path.exists(JSON_DIR):
-        os.rmdir(JSON_DIR)
+    for directory in [AUDIO_DIR, JSON_DIR]:
+        if os.path.exists(directory) and not os.listdir(directory):
+            os.rmdir(directory)
 
 
 if __name__ == "__main__":
