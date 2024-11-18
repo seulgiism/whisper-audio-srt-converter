@@ -2,6 +2,7 @@ import os
 import json
 import shlex
 import subprocess
+import re
 import time
 from groq import Groq
 
@@ -31,7 +32,7 @@ def convert_video_to_audio(video_file_path):
     base_name = os.path.splitext(os.path.basename(video_file_path))[0]
     audio_path = os.path.join(AUDIO_DIR, f"{base_name}.webm")
     ffmpeg_command = (
-        f"ffmpeg -i {shlex.quote(video_file_path)} -ar 16000 -ac 1 -b:a 24k "
+        f"ffmpeg -i {shlex.quote(video_file_path)} -vn -ar 24000 -ac 1 -b:a 48k "
         f"{shlex.quote(audio_path)}"
     )
     print(f"Extracting audio: {video_file_path} -> {audio_path}")
@@ -39,41 +40,12 @@ def convert_video_to_audio(video_file_path):
     return audio_path
 
 
-def split_audio_if_needed(audio_path):
-    """Split audio into smaller parts if it exceeds the size limit."""
-    max_size_mb = 3.9
-    file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
-
-    if file_size_mb <= max_size_mb:
-        return [audio_path]
-
-    print(f"Splitting {audio_path} ({file_size_mb:.2f} MB) into smaller parts...")
-
-    base_name = os.path.splitext(os.path.basename(audio_path))[0]
-    split_dir = os.path.join(AUDIO_DIR, "split")
-    os.makedirs(split_dir, exist_ok=True)
-    split_pattern = os.path.join(split_dir, f"{base_name}-split%03d.webm")
-
-    split_command = (
-        f"ffmpeg -i {shlex.quote(audio_path)} -ar 16000 -ac 1 -b:a 48k "
-        f"-f segment -segment_time 600 -reset_timestamps 1 {shlex.quote(split_pattern)}"
-    )
-    run_command(split_command)
-
-    split_files = sorted(
-        [os.path.join(split_dir, f) for f in os.listdir(split_dir)],
-        key=lambda x: x.lower(),
-    )
-    return split_files
-
-
 def transcribe_audio_with_groq(audio_path, json_output_path):
     """Send audio file to Groq API for transcription."""
     print(f"Transcribing {audio_path} -> {json_output_path}...")
     client = Groq()
     with open(audio_path, "rb") as audio_file:
-        retry_count = 0
-        while retry_count < 5:
+        while True:
             try:
                 transcription = client.audio.transcriptions.create(
                     file=(audio_path, audio_file.read()),
@@ -83,26 +55,26 @@ def transcribe_audio_with_groq(audio_path, json_output_path):
                 )
                 with open(json_output_path, "w", encoding="utf-8") as json_file:
                     json.dump(transcription.to_dict(), json_file, ensure_ascii=False, indent=4)
-                break
+                break  # Successful transcription
             except Exception as e:
-                retry_count += 1
-                wait_time = 60 * retry_count
-                print(f"Error: {e}. Retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
-
-
-def combine_json_segments(json_files, combined_json_path):
-    """Combine multiple JSON transcription files into one."""
-    print(f"Combining JSON files: {json_files} -> {combined_json_path}")
-    combined_segments = []
-    for json_file in json_files:
-        with open(json_file, "r", encoding="utf-8") as file:
-            data = json.load(file)
-            combined_segments.extend(data.get("segments", []))
-
-    combined_data = {"segments": combined_segments}
-    with open(combined_json_path, "w", encoding="utf-8") as file:
-        json.dump(combined_data, file, ensure_ascii=False, indent=4)
+                error_message = str(e)
+                print(f"Error: {error_message}")
+                
+                # Check if it's a rate limit error
+                if "rate limit reached" in error_message.lower():
+                    # Extract the "Please try again in X" time
+                    retry_match = re.search(r"Please try again in (\d+m\d+\.\d+s)", error_message)
+                    if retry_match:
+                        retry_time = retry_match.group(1)
+                        minutes, seconds = map(float, retry_time[:-1].split('m'))
+                        total_wait_time = int(minutes * 60 + seconds)
+                        print(f"Rate limit reached. Retrying in {total_wait_time} seconds...")
+                        time.sleep(total_wait_time)
+                    else:
+                        print("Rate limit reached but no retry time specified. Retrying in 60 seconds...")
+                        time.sleep(60)
+                else:
+                    raise e  # Re-raise other exceptions
 
 
 def seconds_to_srt_timestamp(seconds):
@@ -150,25 +122,22 @@ def process_video_files():
 
         print(f"Processing {video_file}...")
         audio_path = convert_video_to_audio(video_file_path)
-        split_files = split_audio_if_needed(audio_path)
+        json_output_path = os.path.join(JSON_DIR, f"{base_name}.json")
+        transcribe_audio_with_groq(audio_path, json_output_path)
 
-        json_files = []
-        for idx, split_file in enumerate(split_files, start=1):
-            json_output_path = os.path.join(JSON_DIR, f"{base_name}-split{idx:03d}.json")
-            transcribe_audio_with_groq(split_file, json_output_path)
-            json_files.append(json_output_path)
-
-        combined_json_path = os.path.join(JSON_DIR, f"{base_name}.json")
-        combine_json_segments(json_files, combined_json_path)
-
-        convert_json_to_srt(combined_json_path, srt_output_path)
+        convert_json_to_srt(json_output_path, srt_output_path)
         print(f"SRT saved to {srt_output_path}.")
 
         # Cleanup
-        for file in split_files + json_files:
-            os.remove(file)
+        os.remove(audio_path)
+        os.remove(json_output_path)
 
     print("Processing complete.")
+    # Cleanup remaining directories
+    if os.path.exists(AUDIO_DIR):
+        os.rmdir(AUDIO_DIR)
+    if os.path.exists(JSON_DIR):
+        os.rmdir(JSON_DIR)
 
 
 if __name__ == "__main__":
