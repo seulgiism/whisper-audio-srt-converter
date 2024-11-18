@@ -32,7 +32,7 @@ def convert_video_to_audio(video_file_path):
     base_name = os.path.splitext(os.path.basename(video_file_path))[0]
     audio_path = os.path.join(AUDIO_DIR, f"{base_name}.webm")
     ffmpeg_command = (
-        f"ffmpeg -i {shlex.quote(video_file_path)} -vn -ar 24000 -ac 1 -b:a 48k "
+        f"ffmpeg -i {shlex.quote(video_file_path)} -vn -ar 16000 -ac 1 -b:a 24k "
         f"{shlex.quote(audio_path)}"
     )
     print(f"Extracting audio: {video_file_path} -> {audio_path}")
