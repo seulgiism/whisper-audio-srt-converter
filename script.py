@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import os
 import json
 import shlex
@@ -32,7 +34,7 @@ def convert_video_to_audio(video_file_path):
     base_name = os.path.splitext(os.path.basename(video_file_path))[0]
     audio_path = os.path.join(AUDIO_DIR, f"{base_name}.webm")
     ffmpeg_command = (
-        f"ffmpeg -i {shlex.quote(video_file_path)} -vn -ar 16000 -ac 1 -b:a 24k "
+        f"ffmpeg -i {shlex.quote(video_file_path)} -vn -ar 16000 -ac 1 -b:a 25k"
         f"{shlex.quote(audio_path)}"
     )
     print(f"Extracting audio: {video_file_path} -> {audio_path}")
@@ -49,7 +51,7 @@ def transcribe_audio_with_groq(audio_path, json_output_path):
             try:
                 transcription = client.audio.transcriptions.create(
                     file=(audio_path, audio_file.read()),
-                    model="whisper-large-v3-turbo",
+                    model="whisper-large-v3",
                     language="ko",
                     response_format="verbose_json",
                 )
