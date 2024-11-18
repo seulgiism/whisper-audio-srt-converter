@@ -4,10 +4,17 @@ import time
 import re  # For parsing retry times
 from groq import Groq
 
-# Paths configuration
-AUDIO_DIR = "/Volumes/Yoruichi/Movies/Bagel Girl/mp3/convert/"
-JSON_OUTPUT_DIR = "/Volumes/Yoruichi/Movies/Bagel Girl/subs/json/"
-SRT_OUTPUT_DIR = "/Volumes/Yoruichi/Movies/Bagel Girl/subs/srt/"
+# Configure your paths here
+# Put the corresponding directories within the "".
+
+# Audio Directory
+AUDIO_DIR = ""
+
+# The Directory where the .json files will be stored from Groq
+JSON_OUTPUT_DIR = ""
+
+# The directory where the .srt files will be stored
+SRT_OUTPUT_DIR = ""
 
 # Ensure output directories exist
 os.makedirs(JSON_OUTPUT_DIR, exist_ok=True)
